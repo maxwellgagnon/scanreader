@@ -31,6 +31,8 @@ import itertools
 from . import utils
 from .multiroi import ROI
 from .exceptions import FieldDimensionMismatch
+import copy
+channels_as_fields = True
 
 class BaseScan():
     """ Properties and methods shared among all scan versions.
@@ -301,6 +303,10 @@ class BaseScan():
         self.dtype=dtype # set dtype of read data
         self.header = '{}\n{}'.format(self.tiff_files[0].pages[0].description,
                                       self.tiff_files[0].pages[0].software) # set header (ScanImage metadata)
+        if channels_as_fields:
+            old_text = "SI.hChannels.channelSave = [1;2;3;4;5;6;7;8;9;10;11;12;13;14;15;16;17;18;19;20;21;22;23;24;25;26;27;28;29;30]"
+            new_text = "SI.hChannels.channelSave = [1]"
+            self.header = self.header.replace(old_text, new_text)
 
     def __array__(self):
         return self[:]
@@ -377,13 +383,22 @@ class BaseScan():
             want to read (the output array, the read pages and the list-sliced pages).
             Slices limit this to 2x (output array and read pages which are sliced in place).
         """
+        if channels_as_fields:
+            chan_amt = 30
+            field_amt = 5
+            frame_amt = int(self.num_frames / chan_amt)
+        else:
+            chan_amt = self.num_channels
+            field_amt = self.num_fields
+            frame_amt = self.num_frames
+            
         # Compute pages to load from tiff files
         if self.is_slow_stack:
-            frame_step = self.num_channels
-            slice_step = self.num_channels * self.num_frames
+            frame_step = chan_amt
+            slice_step = chan_amt * frame_amt
         else:
-            slice_step = self.num_channels
-            frame_step = self.num_channels * self.num_scanning_depths
+            slice_step = chan_amt
+            frame_step = chan_amt * self.num_scanning_depths
         pages_to_read = []
         for frame in frame_list:
             for slice_ in slice_list:
@@ -810,9 +825,16 @@ class ScanMultiROI(NewerScan, BaseScan):
 
                     # Compute next starting y
                     next_line_in_page += new_field.height + self._num_fly_to_lines
-
-                    # Add field to fields
-                    fields.append(new_field)
+                    
+                    # Create duplicates for each field for each pseudo-channel in a LBM scan
+                    if channels_as_fields:
+                        pseudoChannel_amt = 30 # Should be 30 later
+                        for chan_id in np.arange(pseudoChannel_amt):
+                            temp_field = []
+                            temp_field = copy.deepcopy(new_field)
+                            fields.append(temp_field)
+                    else:
+                        fields.append(new_field)
 
             # Accumulate overall number of scanned lines
             previous_lines += self._num_lines_between_fields
@@ -852,29 +874,60 @@ class ScanMultiROI(NewerScan, BaseScan):
                         break
 
     def __getitem__(self, key):
+                    
+        channel2depth = [0,4,5,6,7,8,1, 9,10,11,12,13,14,15,16,2,17,18,19,20,21,22,3,23,24,25,26,27,28,29]# deep -> shallow
+        # channel2depth = [29,28,27,26,25,24,23,3,22,21,20,19,18,17,2,16,15,14,13,12,11,10,9,1,8,7,6,5,4,0]# shallow -> deep
+        
+        if channels_as_fields:
+            chan_amt = 30
+            field_amt = 150
+            frame_amt = int(self.num_frames / chan_amt)
+            
+            # Convert c2f query to native object query
+            if type(key) == int:
+                c2f_field = key
+            elif isinstance(key[0], slice):
+                print('Warning!! Only single field indexing supported. Returning only FIRST field queried for')
+                c2f_field = key[0].start
+            else:
+                c2f_field = key[0]
+            
+            scanimage_field = c2f_field 
+            scanimage_channel = channel2depth[c2f_field % chan_amt]
+            
+            intermediate_key = (int(scanimage_field),
+                                slice(None, None, None), 
+                                slice(None, None, None), 
+                                int(scanimage_channel), 
+                                slice(None, None, None))
+        else:
+            chan_amt = self.num_channels
+            field_amt = self.num_fields
+            frame_amt = self.num_frames
+            intermediate_key = key
+            
         # Fill key to size 5 (raises IndexError if more than 5)
-        full_key = utils.fill_key(key, num_dimensions=5)
+        full_key = utils.fill_key(intermediate_key, num_dimensions=5)
 
         # Check index types are valid
         for i, index in enumerate(full_key):
             utils.check_index_type(i, index)
 
         # Check each dimension is in bounds
-        utils.check_index_is_in_bounds(0, full_key[0], self.num_fields)
-        for field_id in utils.listify_index(full_key[0], self.num_fields):
+        utils.check_index_is_in_bounds(0, full_key[0], field_amt)
+        for field_id in utils.listify_index(full_key[0], field_amt):
             utils.check_index_is_in_bounds(1, full_key[1], self.field_heights[field_id])
             utils.check_index_is_in_bounds(2, full_key[2], self.field_widths[field_id])
-        utils.check_index_is_in_bounds(3, full_key[3], self.num_channels)
-        utils.check_index_is_in_bounds(4, full_key[4], self.num_frames)
+        utils.check_index_is_in_bounds(3, full_key[3], chan_amt)
+        utils.check_index_is_in_bounds(4, full_key[4], frame_amt)
 
-        # Get fields, channels and frames as lists
-        field_list = utils.listify_index(full_key[0], self.num_fields)
+        field_list = utils.listify_index(full_key[0], field_amt)
         y_lists = [utils.listify_index(full_key[1], self.field_heights[field_id]) for
                    field_id in field_list]
         x_lists = [utils.listify_index(full_key[2], self.field_widths[field_id]) for
                    field_id in field_list]
-        channel_list = utils.listify_index(full_key[3], self.num_channels)
-        frame_list = utils.listify_index(full_key[4], self.num_frames)
+        channel_list = utils.listify_index(full_key[3], chan_amt)
+        frame_list = utils.listify_index(full_key[4], frame_amt)
 
         # Edge case when slice index gives 0 elements or index is empty list, e.g., scan[10:0], scan[[]]
         if [] in [field_list, *y_lists, *x_lists, channel_list, frame_list]:
