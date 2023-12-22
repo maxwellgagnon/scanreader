@@ -221,7 +221,14 @@ class Field(Scanfield):
         mask = np.full([self.height, self.width], -1, dtype=np.float32)
         for offsets, output_yslice, output_xslice in zip(self.offsets, self.output_yslices,
                                                         self.output_xslices):
-            mask[output_yslice, output_xslice] = offsets
+
+            # if offsets.shape[0] > self.height:
+            #     print(f"Field is smaller than offset array! Not including last {offsets.shape[1] - mask.shape[1]} rows of tiff!")
+            # elif offsets.shape[1] > self.width:
+            #     print(f"Field is smaller than offset array! Not including off last {offsets.shape[1] - mask.shape[1]} columns of tiff!")
+                
+            mask[output_yslice, output_xslice] = offsets[:np.min((offsets.shape[0], self.height)),
+                                                        :np.min((offsets.shape[1], self.width))]
         return mask
 
     def _type_of_contiguity(self, field2):
