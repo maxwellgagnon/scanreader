@@ -43,8 +43,13 @@ class ROI:
         scanfields = []
         for scanfield_info, scanfield_depth in zip(scanfield_infos, scanfield_depths):
             # if scanfield_info['enable']: # this is always 1 even if ROI is disabled
-            # Get scanfield info
             width, height = scanfield_info['pixelResolutionXY']
+            
+            # Relevant for LBM scans. There is a bug when scans were collected, 
+            # where the tiff file width does not match the pixelResolutionXY information.
+            if scanfield_info['is_lbm']:
+                width = scanfield_info['pixelsPerLine']
+
             xcenter, ycenter = scanfield_info['centerXY']
             size_in_x, size_in_y = scanfield_info['sizeXY']
 

@@ -32,7 +32,6 @@ from . import utils
 from .multiroi import ROI
 from .exceptions import FieldDimensionMismatch
 import copy
-channels_as_fields = True
 
 class BaseScan():
     """ Properties and methods shared among all scan versions.
@@ -303,10 +302,34 @@ class BaseScan():
         self.dtype=dtype # set dtype of read data
         self.header = '{}\n{}'.format(self.tiff_files[0].pages[0].description,
                                       self.tiff_files[0].pages[0].software) # set header (ScanImage metadata)
-        if channels_as_fields:
-            old_text = "SI.hChannels.channelSave = [1;2;3;4;5;6;7;8;9;10;11;12;13;14;15;16;17;18;19;20;21;22;23;24;25;26;27;28;29;30]"
+        
+        # This string is an indication that the scan is an LBM scan. Revisit later for more robust ID?
+        lbm_marker_string = "SI.hChannels.channelSave = [1;2;3;4;5;6;7;8;9;10;11;12;13;14;15;16;17;18;19;20;21;22;23;24;25;26;27;28;29;30]"
+        if lbm_marker_string in self.header:
+            print('Interpreted as an LBM Scan!')
+            # Add LBM information to the header
+            self.header = self.header + "\nis_lbm = True"
+            # Replace the LBM marker text so the header plays nicely with downsteam code
             new_text = "SI.hChannels.channelSave = [1]"
-            self.header = self.header.replace(old_text, new_text)
+            self.header = self.header.replace(lbm_marker_string, new_text)
+        else:
+            self.header = self.header + "\nis_lbm = False"
+
+
+        # add original tiff dimensions to the ROIS
+        match = re.search(r'SI\.hRoiManager\.pixelsPerLine = (?P<pixelsPerLine>.*)', self.header)
+        pixelsPerLine = int(match.group('pixelsPerLine')) if match else None
+            
+        for tiff_file in self.tiff_files:
+            for roi in tiff_file.scanimage_metadata['RoiGroups']['imagingRoiGroup']['rois']:
+                # print(roi['scanfields'])
+                roi['scanfields']['pixelsPerLine'] = pixelsPerLine
+                roi['scanfields']['is_lbm'] = self.is_lbm
+        
+    def is_lbm(self):
+        match = re.search(r'is_lbm = (?P<is_lbm>.*)', self.header)
+        is_lbm = (match.group('is_lbm') == 'true') if match else False
+        return is_lbm
 
     def __array__(self):
         return self[:]
@@ -383,7 +406,7 @@ class BaseScan():
             want to read (the output array, the read pages and the list-sliced pages).
             Slices limit this to 2x (output array and read pages which are sliced in place).
         """
-        if channels_as_fields:
+        if self.is_lbm:
             chan_amt = 30
             field_amt = 5
             frame_amt = int(self.num_frames / chan_amt)
@@ -827,7 +850,7 @@ class ScanMultiROI(NewerScan, BaseScan):
                     next_line_in_page += new_field.height + self._num_fly_to_lines
                     
                     # Create duplicates for each field for each pseudo-channel in a LBM scan
-                    if channels_as_fields:
+                    if self.is_lbm:
                         pseudoChannel_amt = 30 # Should be 30 later
                         for chan_id in np.arange(pseudoChannel_amt):
                             temp_field = []
@@ -878,7 +901,7 @@ class ScanMultiROI(NewerScan, BaseScan):
         channel2depth = [0,4,5,6,7,8,1, 9,10,11,12,13,14,15,16,2,17,18,19,20,21,22,3,23,24,25,26,27,28,29]# deep -> shallow
         # channel2depth = [29,28,27,26,25,24,23,3,22,21,20,19,18,17,2,16,15,14,13,12,11,10,9,1,8,7,6,5,4,0]# shallow -> deep
         
-        if channels_as_fields:
+        if self.is_lbm:
             chan_amt = 30
             field_amt = 150
             frame_amt = int(self.num_frames / chan_amt)
