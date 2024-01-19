@@ -299,38 +299,57 @@ class BaseScan():
             dtype: Data type of the output array.
         """
         self.filenames = filenames # set filenames
-        self.dtype=dtype # set dtype of read data
+        self.dtype = dtype # set dtype of read data
         self.header = '{}\n{}'.format(self.tiff_files[0].pages[0].description,
                                       self.tiff_files[0].pages[0].software) # set header (ScanImage metadata)
-        
-        # This string is an indication that the scan is an LBM scan. Revisit later for more robust ID?
-        lbm_marker_string = "SI.hChannels.channelSave = [1;2;3;4;5;6;7;8;9;10;11;12;13;14;15;16;17;18;19;20;21;22;23;24;25;26;27;28;29;30]"
-        if lbm_marker_string in self.header:
-            print('Interpreted as an LBM Scan!')
-            # Add LBM information to the header
+                    
+        # If a scan has > 2 channels (depths), treat as LBM. NOTE: lbm scans may have <30 channels (depths) in the future. 
+        if self.num_channels > 2:
+            print('Interpreted as LBM Scan!')
+            
             self.header = self.header + "\nis_lbm = True"
-            # Replace the LBM marker text so the header plays nicely with downsteam code
-            new_text = "SI.hChannels.channelSave = [1]"
-            self.header = self.header.replace(lbm_marker_string, new_text)
+            self.header = self.header + f"\nlbm_depth_amt = {self.num_channels}"
+            
+            # For LBM scans, depths/channels are not stored sequentially. e.g. Indexing [1] returns the 4th depth from the bottom.
+            # NOTE: This conversion array is true for the initial/2023 Rockefellar scans, and may not be true for future scans/rigs/etc. 
+            self.header = self.header + "\nlbm_channel2depth_conversion = [0,4,5,6,7,8,1,9,10,11,12,13,14,15,16,2,17,18,19,20,21,22,3,23,24,25,26,27,28,29]" # deep -> shallow
+            
+            # Update the scan header to reflect how scanreader should interact with an lbm scan.
+            # For the initial/2023 set of Rockefellar LBM scans, depths are saved as channels, ScanReader should treat these as fields, so 
+            # change the header data to reflect this.
+            original_channel_header_info = re.search(r'hChannels\.channelSave = (?P<channels>.*)', self.header)
+            original_channel_header_info = original_channel_header_info[0]
+            new_channel_header_info = "\nSI.hChannels.channelSave = [1]"
+            self.header = self.header.replace(original_channel_header_info, new_channel_header_info)
+            
         else:
             self.header = self.header + "\nis_lbm = False"
 
-
-        # add original tiff dimensions to the ROIS
+        # add original tiff dimensions to the ROIS. The initial/2023 set of Rockefellar LBM scans had a mismatch between the stated field width (144px), and 
+        # the actual width of the tiff files collected (146px). This information is stored in the ROI objects, to be checked when indexing the tiff file.
+        # ScanReader should use the full width of the tiff (146px)
         match = re.search(r'SI\.hRoiManager\.pixelsPerLine = (?P<pixelsPerLine>.*)', self.header)
         pixelsPerLine = int(match.group('pixelsPerLine')) if match else None
-            
         for tiff_file in self.tiff_files:
-            for roi in tiff_file.scanimage_metadata['RoiGroups']['imagingRoiGroup']['rois']:
-                # print(roi['scanfields'])
-                roi['scanfields']['pixelsPerLine'] = pixelsPerLine
-                roi['scanfields']['is_lbm'] = self.is_lbm
+            # If there is only 1 roi (a dict), don't loop through
+            if isinstance(tiff_file.scanimage_metadata['RoiGroups']['imagingRoiGroup']['rois'], dict):
+                tiff_file.scanimage_metadata['RoiGroups']['imagingRoiGroup']['rois']['pixelsPerLine'] = pixelsPerLine
+                tiff_file.scanimage_metadata['RoiGroups']['imagingRoiGroup']['rois']['is_lbm'] = self.is_lbm()
+            else:
+                for roi in tiff_file.scanimage_metadata['RoiGroups']['imagingRoiGroup']['rois']:
+                    roi['scanfields']['pixelsPerLine'] = pixelsPerLine
+                    roi['scanfields']['is_lbm'] = self.is_lbm()
         
     def is_lbm(self):
+        """ Checks if scan is a Light Bean Microscopy Scan, returns True or False """
         match = re.search(r'is_lbm = (?P<is_lbm>.*)', self.header)
-        is_lbm = (match.group('is_lbm') == 'true') if match else False
-        return is_lbm
-
+        return (match.group('is_lbm') == 'True') if match else False
+    
+    def lbm_depth_amt(self):
+        """ Returns the amount of depths within an lbm scan, typically 30"""
+        match = re.search(r'lbm_depth_amt = (?P<lbm_depth_amt>.*)', self.header)
+        return int(match.group('lbm_depth_amt')) if match else None
+                    
     def __array__(self):
         return self[:]
 
@@ -406,7 +425,7 @@ class BaseScan():
             want to read (the output array, the read pages and the list-sliced pages).
             Slices limit this to 2x (output array and read pages which are sliced in place).
         """
-        if self.is_lbm:
+        if self.is_lbm():
             chan_amt = 30
             field_amt = 5
             frame_amt = int(self.num_frames / chan_amt)
@@ -850,7 +869,7 @@ class ScanMultiROI(NewerScan, BaseScan):
                     next_line_in_page += new_field.height + self._num_fly_to_lines
                     
                     # Create duplicates for each field for each pseudo-channel in a LBM scan
-                    if self.is_lbm:
+                    if self.is_lbm():
                         pseudoChannel_amt = 30 # Should be 30 later
                         for chan_id in np.arange(pseudoChannel_amt):
                             temp_field = []
@@ -897,38 +916,85 @@ class ScanMultiROI(NewerScan, BaseScan):
                         break
 
     def __getitem__(self, key):
-                    
-        channel2depth = [0,4,5,6,7,8,1, 9,10,11,12,13,14,15,16,2,17,18,19,20,21,22,3,23,24,25,26,27,28,29]# deep -> shallow
-        # channel2depth = [29,28,27,26,25,24,23,3,22,21,20,19,18,17,2,16,15,14,13,12,11,10,9,1,8,7,6,5,4,0]# shallow -> deep
-        
-        if self.is_lbm:
-            chan_amt = 30
+                  
+        if self.is_lbm():
+            
+            # From the user's perspective, the scanreader object has 1 channel X depths and Y fields per depth. i.e., X*Y 'true' fields. 
+            # However, when indexing the scanreader object, convert that indexing to match how raw tiff was saved
+            chan_amt  = 30
             field_amt = 150
-            frame_amt = int(self.num_frames / chan_amt)
+            # frame_amt = int(self.num_frames / chan_amt)
             
-            # Convert c2f query to native object query
-            if type(key) == int:
-                c2f_field = key
-            elif isinstance(key[0], slice):
-                print('Warning!! Only single field indexing supported. Returning only FIRST field queried for')
-                c2f_field = key[0].start
+            x_indexing = slice(None, None, None)
+            y_indexing = slice(None, None, None)
+            frame_indexing = slice(None, None, None)
+            
+            # Is key an int? This means only indexing for a single field. 
+            if isinstance(key, int):
+                true_field_list = [key]
+                
+            # Is key a slice? This means only indexing a slice of fields.
+            elif isinstance(key, slice):
+                true_field_list = np.arange(key.start or 0, 
+                                            key.stop or field_amt, 
+                                            key.step or 1)
+                
+            # A list means indexing for more than just a field
+            elif isinstance(key, (list, np.ndarray, tuple)):
+                if isinstance(key[0], int):
+                    true_field_list = [key[0]]
+                elif isinstance(key[0], slice):
+                    true_field_list = np.arange(key[0].start or 0, 
+                                                key[0].stop or field_amt, 
+                                                key[0].step or 1)
+                
+                # x indexing
+                if len(key) >= 2:
+                    x_indexing = key[1]
+                    
+                # y indexing
+                if len(key) >= 3:
+                    y_indexing = key[2]
+                    
+                # Frame indexing
+                if len(key) == 5:
+                    frame_indexing = key[4]
+                    
             else:
-                c2f_field = key[0]
+                print(f"No fields identified. Possible Error in index type: {type(key[0])}")
+                true_field_list = []
+                
+            # Convert True Fields to raw fields and raw channels
+            match = re.search(r'lbm_channel2depth_conversion = (?P<channel2depth>.*)', self.header)
+            channels = matlabstr2py(match[0])
+            channel2depth = np.array([int(num) for num in channels[2].split(',')])
+
+            raw_chan_amt = len(channel2depth)
+            raw_field_amt = field_amt // raw_chan_amt
+
+            # Create lookup table, then extract raw channel and field information
+            channel2depth_pairs = np.column_stack((np.arange(len(channel2depth)), channel2depth))
+            depth_order = channel2depth_pairs[np.argsort(channel2depth_pairs[:, 1])][::-1, 0]
+            field_lookup_table = depth_order[:, None] + raw_chan_amt * np.arange(raw_field_amt)
             
-            scanimage_field = c2f_field 
-            scanimage_channel = channel2depth[c2f_field % chan_amt]
-            
-            intermediate_key = (int(scanimage_field),
-                                slice(None, None, None), 
-                                slice(None, None, None), 
-                                int(scanimage_channel), 
-                                slice(None, None, None))
+            all_raw_chans = []
+            all_raw_fields = []
+            for true_field in true_field_list:
+                raw_chan, raw_field = np.where(field_lookup_table == true_field)
+                all_raw_chans.append(raw_chan[0])
+                all_raw_fields.append(raw_field[0])
+                
+            intermediate_key = (all_raw_fields,
+                                x_indexing, 
+                                y_indexing, 
+                                all_raw_chans, 
+                                frame_indexing)
+            # TODO: Flatten channel dimension later? 
         else:
             chan_amt = self.num_channels
             field_amt = self.num_fields
-            frame_amt = self.num_frames
             intermediate_key = key
-            
+        
         # Fill key to size 5 (raises IndexError if more than 5)
         full_key = utils.fill_key(intermediate_key, num_dimensions=5)
 
@@ -942,7 +1008,7 @@ class ScanMultiROI(NewerScan, BaseScan):
             utils.check_index_is_in_bounds(1, full_key[1], self.field_heights[field_id])
             utils.check_index_is_in_bounds(2, full_key[2], self.field_widths[field_id])
         utils.check_index_is_in_bounds(3, full_key[3], chan_amt)
-        utils.check_index_is_in_bounds(4, full_key[4], frame_amt)
+        utils.check_index_is_in_bounds(4, full_key[4], self.num_frames)
 
         field_list = utils.listify_index(full_key[0], field_amt)
         y_lists = [utils.listify_index(full_key[1], self.field_heights[field_id]) for
@@ -950,7 +1016,7 @@ class ScanMultiROI(NewerScan, BaseScan):
         x_lists = [utils.listify_index(full_key[2], self.field_widths[field_id]) for
                    field_id in field_list]
         channel_list = utils.listify_index(full_key[3], chan_amt)
-        frame_list = utils.listify_index(full_key[4], frame_amt)
+        frame_list = utils.listify_index(full_key[4], self.num_frames)
 
         # Edge case when slice index gives 0 elements or index is empty list, e.g., scan[10:0], scan[[]]
         if [] in [field_list, *y_lists, *x_lists, channel_list, frame_list]:

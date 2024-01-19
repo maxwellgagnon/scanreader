@@ -47,8 +47,10 @@ class ROI:
             
             # Relevant for LBM scans. There is a bug when scans were collected, 
             # where the tiff file width does not match the pixelResolutionXY information.
-            if scanfield_info['is_lbm']:
-                width = scanfield_info['pixelsPerLine']
+            # if scanfield_info['is_lbm']:
+            #     width = scanfield_info['pixelsPerLine']
+            
+            width = scanfield_info['pixelsPerLine']
 
             xcenter, ycenter = scanfield_info['centerXY']
             size_in_x, size_in_y = scanfield_info['sizeXY']
