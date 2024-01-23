@@ -926,6 +926,7 @@ class ScanMultiROI(NewerScan, BaseScan):
             y_indexing = slice(None, None, None)
             frame_indexing = slice(None, None, None)
             true_field_list = []
+            field_idx_is_slice = False
             
             # Is key an int? This means only indexing for a single field. 
             if isinstance(key, int):
@@ -933,6 +934,7 @@ class ScanMultiROI(NewerScan, BaseScan):
                 
             # Is key a slice? This means only indexing a slice of fields.
             elif isinstance(key, slice):
+                field_idx_is_slice = True
                 true_field_list = np.arange(key.start or 0, 
                                             key.stop or self.num_fields, 
                                             key.step or 1)
@@ -941,18 +943,20 @@ class ScanMultiROI(NewerScan, BaseScan):
             elif isinstance(key, (list, np.ndarray, tuple)):
                 if isinstance(key[0], int):
                     true_field_list = [key[0]]
+                    
                 elif isinstance(key[0], slice):
+                    field_idx_is_slice = True
                     true_field_list = np.arange(key[0].start or 0, 
                                                 key[0].stop or self.num_fields, 
                                                 key[0].step or 1)
                 
-                # x indexing
-                if len(key) >= 2:
-                    x_indexing = key[1]
-                    
                 # y indexing
+                if len(key) >= 2:
+                    y_indexing = key[1]
+                    
+                # x indexing
                 if len(key) >= 3:
-                    y_indexing = key[2]
+                    x_indexing = key[2]
                     
                 # Frame indexing
                 if len(key) == 5:
@@ -984,7 +988,7 @@ class ScanMultiROI(NewerScan, BaseScan):
                 all_raw_chans.append(raw_chan[0])
                 all_raw_fields.append(raw_field[0])
                 
-            # make sure single number indices are not ararys/lists/etc...
+            # make sure single number indices are not arrays/lists/etc...
             def to_single_number(var):
                 # Check if var is a list or numpy array with exactly one element
                 if isinstance(var, (list, np.ndarray)) and len(var) == 1:
@@ -994,9 +998,15 @@ class ScanMultiROI(NewerScan, BaseScan):
                     # Return the variable as-is if it's not a list/array with one element
                     return var
                 
-            variables = [all_raw_fields, x_indexing, y_indexing, all_raw_chans, frame_indexing]
-            intermediate_key = tuple(to_single_number(var) for var in variables)
+            variables = [all_raw_fields, y_indexing, x_indexing, all_raw_chans, frame_indexing]
+            intermediate_key = [to_single_number(var) for var in variables]
 
+            # HACK: Used when meso.MotionCorrection() uses a slice to index a single dimension to keep scanreader object 5d. 
+            if field_idx_is_slice:
+                intermediate_key[0] = slice(all_raw_fields[0]-1,all_raw_fields[0],None)
+                intermediate_key[3] = slice(all_raw_chans[0]-1,all_raw_chans[0],None)
+            intermediate_key = tuple(var for var in intermediate_key)
+            
         else:
             chan_amt = self.num_channels
             field_amt = self.num_fields
