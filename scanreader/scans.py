@@ -984,12 +984,19 @@ class ScanMultiROI(NewerScan, BaseScan):
                 all_raw_chans.append(raw_chan[0])
                 all_raw_fields.append(raw_field[0])
                 
-            intermediate_key = (all_raw_fields,
-                                x_indexing, 
-                                y_indexing, 
-                                all_raw_chans, 
-                                frame_indexing)
-            # TODO: Flatten channel dimension later? 
+            # make sure single number indices are not ararys/lists/etc...
+            def to_single_number(var):
+                # Check if var is a list or numpy array with exactly one element
+                if isinstance(var, (list, np.ndarray)) and len(var) == 1:
+                    # Extract the single element and return it
+                    return var[0]
+                else:
+                    # Return the variable as-is if it's not a list/array with one element
+                    return var
+                
+            variables = [all_raw_fields, x_indexing, y_indexing, all_raw_chans, frame_indexing]
+            intermediate_key = tuple(to_single_number(var) for var in variables)
+
         else:
             chan_amt = self.num_channels
             field_amt = self.num_fields
