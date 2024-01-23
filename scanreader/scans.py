@@ -920,14 +920,12 @@ class ScanMultiROI(NewerScan, BaseScan):
         if self.is_lbm():
             
             # From the user's perspective, the scanreader object has 1 channel X depths and Y fields per depth. i.e., X*Y 'true' fields. 
-            # However, when indexing the scanreader object, convert that indexing to match how raw tiff was saved
-            chan_amt  = 30
-            field_amt = 150
-            # frame_amt = int(self.num_frames / chan_amt)
+            # However, when indexing the scanreader object, convert that indexing to match how raw tiff was saved        
             
             x_indexing = slice(None, None, None)
             y_indexing = slice(None, None, None)
             frame_indexing = slice(None, None, None)
+            true_field_list = []
             
             # Is key an int? This means only indexing for a single field. 
             if isinstance(key, int):
@@ -936,7 +934,7 @@ class ScanMultiROI(NewerScan, BaseScan):
             # Is key a slice? This means only indexing a slice of fields.
             elif isinstance(key, slice):
                 true_field_list = np.arange(key.start or 0, 
-                                            key.stop or field_amt, 
+                                            key.stop or self.num_fields, 
                                             key.step or 1)
                 
             # A list means indexing for more than just a field
@@ -945,7 +943,7 @@ class ScanMultiROI(NewerScan, BaseScan):
                     true_field_list = [key[0]]
                 elif isinstance(key[0], slice):
                     true_field_list = np.arange(key[0].start or 0, 
-                                                key[0].stop or field_amt, 
+                                                key[0].stop or self.num_fields, 
                                                 key[0].step or 1)
                 
                 # x indexing
@@ -970,7 +968,9 @@ class ScanMultiROI(NewerScan, BaseScan):
             channel2depth = np.array([int(num) for num in channels[2].split(',')])
 
             raw_chan_amt = len(channel2depth)
-            raw_field_amt = field_amt // raw_chan_amt
+            raw_field_amt = self.num_fields // raw_chan_amt
+            chan_amt = raw_chan_amt
+            field_amt = raw_field_amt
 
             # Create lookup table, then extract raw channel and field information
             channel2depth_pairs = np.column_stack((np.arange(len(channel2depth)), channel2depth))
@@ -1032,7 +1032,7 @@ class ScanMultiROI(NewerScan, BaseScan):
         item = np.empty([len(field_list), len(y_lists[0]), len(x_lists[0]),
                         len(channel_list), len(frame_list)], dtype=self.dtype)
         for i, (field_id, y_list, x_list) in enumerate(zip(field_list, y_lists, x_lists)):
-            field = self.fields[field_id]
+            field = self.fields[field_id+(field_id*30)]
 
             # Over each subfield in field (only one for non-contiguous fields)
             slices = zip(field.yslices, field.xslices, field.output_yslices, field.output_xslices)
