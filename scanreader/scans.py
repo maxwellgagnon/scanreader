@@ -1003,8 +1003,8 @@ class ScanMultiROI(NewerScan, BaseScan):
 
             # HACK: Used when meso.MotionCorrection() uses a slice to index a single dimension to keep scanreader object 5d. 
             if field_idx_is_slice:
-                intermediate_key[0] = slice(all_raw_fields[0]-1,all_raw_fields[0],None)
-                intermediate_key[3] = slice(all_raw_chans[0]-1,all_raw_chans[0],None)
+                intermediate_key[0] = slice(all_raw_fields[0],all_raw_fields[0]+1,None)
+                intermediate_key[3] = slice(all_raw_chans[0],all_raw_chans[0]+1,None)
             intermediate_key = tuple(var for var in intermediate_key)
             
         else:
