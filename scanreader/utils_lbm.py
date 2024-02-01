@@ -8,6 +8,7 @@ from . import core
 import sys
 sys.path.append('/mnt/lab/users/maxgagnon/src/mosaic-picasso')
 import mosaic_picasso.mosaic as mp
+import mosaic_picasso.utils as utils
 
 ''' 
 For the initial/2023 Rockefellar LBM scans (And potentially future lbm scans) there are significant portions 
@@ -127,46 +128,61 @@ def gaussian(x, mu, sigma):
         
 #     return m_opts, best_m
     
-# def mosaic_crosstalk(scan_filename, depths_considered, users_params=None):
-#     ''' Crosstalk calculateion method implemented in mosaic-picasso '''
-#     print('Reading header...')
-#     scan = core.read_scan(scan_filename, check_lbm=True) 
+def mosaic_29(scan_filename, users_params=None):
+    ''' Crosstalk calculation method implemented in mosaic-picasso. This method will calculate crosstalk for all depths except the last '''
     
-#     params = {
-#             'bins': 256,
-#             'beta': 0,
-#             'gamma': 0.1,
-#             'cycles': 20,
-#             'nch': 2,
-#             'threshold': 50}
+    print('Opening Scan...')
+    scan = core.read_scan(scan_filename, check_lbm=True) 
     
-#     # override default params with user params
-#     if users_params is not None:
-#         params.update(users_params)
+    # Default Params
+    params = {  'bins': 256,
+                'beta': 0,
+                'gamma': 0.1,
+                'cycles': 20,
+                'nch': 29, 
+                'threshold': 50}
     
-def none_crosstalk(scan_filename, depths_considered, users_params=None):
+    # Override default params with user params
+    if users_params is not None:
+        params.update(users_params)
+        
+    print(f"   Extracting Fields...")
+    all_depths = np.mean(scan[:,:,:,:-1,:],axis=(-1))
+    print(f"   all_depths.shape: {all_depths.shape}")
+
+    print(f"   Concatinating Fields...")
+    all_depths = np.array(np.concatenate(all_depths, axis=0))
+    print(f"   all_depths.shape: {all_depths.shape}")
+
+    print(f"   Running Mosaic...")
+    _,weight_matrix = mp.mosaic(all_depths)
+        
+    return weight_matrix
+
+def none_crosstalk(scan_filename, users_params=None):
+    
+    scan = core.read_scan(scan_filename, check_lbm=True) 
+    
     return np.ones((len(depths_considered), len(depths_considered)))
 
 # Function that manages the specific crosstalk calculation methods
-def calculate_crosstalk(scan_filename, method, depths_considered, save_results_path=None, verbose=False):
+def calculate_crosstalk(scan_filename, method, save_results_path=None, verbose=False):
     
-    if method == 'mosaic_default':
-        analysis_method = mosaic_crosstalk
+    # if method == 's2plbm':
+    #     analysis_method = s2plbm_crosstalk
+    #     method_params = None
+        
+    if method == 'None':
+        analysis_method = none_crosstalk
+        method_params = None
+        
+    elif method == 'mosaic_29':
+        analysis_method = mosaic_29
         method_params = {'bins': 256,
                         'beta': 0,
                         'gamma': 0.1,
                         'cycles': 20,
-                        'nch': len(depths_considered),
                         'threshold': 50}
-        
-    if method == 's2plbm':
-        analysis_method = s2plbm_crosstalk
-        method_params = None
-        
-    elif method == 'None':
-        analysis_method = none_crosstalk
-        method_params = None
-    
     else:
         analysis_method = None
         method_params = None

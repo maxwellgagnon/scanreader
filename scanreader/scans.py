@@ -308,7 +308,7 @@ class BaseScan():
             print('Interpreted as LBM Scan!')
             
             self.header = self.header + "\nis_lbm = True"
-            self.header = self.header + f"\nlbm_depth_amt = {self.num_channels}"
+            self.header = self.header + f"\nnum_lbm_depths = {self.num_channels}"
             
             # For LBM scans, depths/channels are not stored sequentially. e.g. Indexing [1] returns the 4th depth from the bottom.
             # NOTE: This conversion array is true for the initial/2023 Rockefellar scans, and may not be true for future scans/rigs/etc. 
@@ -345,10 +345,10 @@ class BaseScan():
         match = re.search(r'is_lbm = (?P<is_lbm>.*)', self.header)
         return (match.group('is_lbm') == 'True') if match else False
     
-    def lbm_depth_amt(self):
+    def num_lbm_depths(self):
         """ Returns the amount of depths within an lbm scan, typically 30"""
-        match = re.search(r'lbm_depth_amt = (?P<lbm_depth_amt>.*)', self.header)
-        return int(match.group('lbm_depth_amt')) if match else None
+        match = re.search(r'num_lbm_depths = (?P<num_lbm_depths>.*)', self.header)
+        return int(match.group('num_lbm_depths')) if match else None
                     
     def __array__(self):
         return self[:]
@@ -929,7 +929,7 @@ class ScanMultiROI(NewerScan, BaseScan):
             field_idx_is_slice = False
             
             # Is key an int? This means only indexing for a single field. 
-            if isinstance(key, int):
+            if isinstance(key, (int, np.integer)):
                 true_field_list = [key]
                 
             # Is key a slice? This means only indexing a slice of fields.
@@ -980,6 +980,7 @@ class ScanMultiROI(NewerScan, BaseScan):
             channel2depth_pairs = np.column_stack((np.arange(len(channel2depth)), channel2depth))
             depth_order = channel2depth_pairs[np.argsort(channel2depth_pairs[:, 1])][::-1, 0]
             field_lookup_table = depth_order[:, None] + raw_chan_amt * np.arange(raw_field_amt)
+            field_lookup_table = np.flip(field_lookup_table, 0)
             
             all_raw_chans = []
             all_raw_fields = []
