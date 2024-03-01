@@ -27,11 +27,15 @@ from tifffile import TiffFile
 from tifffile.tifffile import matlabstr2py
 import numpy as np
 import re
+import ast
 import itertools
 from . import utils
 from .multiroi import ROI
 from .exceptions import FieldDimensionMismatch
 import copy
+import sys
+from tqdm import tqdm
+import time
 
 class BaseScan():
     """ Properties and methods shared among all scan versions.
@@ -64,6 +68,7 @@ class BaseScan():
             needs to be shared add it as a private method here.
         If it is not in every subclass, it should not be here.
     """
+    
     def __init__(self):
         self.filenames = None
         self.dtype = None
@@ -184,7 +189,37 @@ class BaseScan():
 
     @property
     def _num_pages(self):
-        num_pages = sum([len(tiff_file.pages) for tiff_file in self.tiff_files])
+
+        # If you are an lbm scan, import meso and check if you cached the page amount
+        if self.is_lbm and self.scan_key is not None:
+            scan_key = self.scan_key
+            
+            # lbm_path = '/mnt/lab/users/maxgagnon/src/schoolwork/Light Bead/meso_lbm/'
+            # if lbm_path not in sys.path:
+            #     sys.path.insert(0, lbm_path)
+            # import LBM as lbm
+            import datajoint as dj
+            lbm = dj.create_virtual_module('lbm', 'mgagnon_meso_lbm_dev')
+            
+            # Check if you already know how many pages there are
+            if len(lbm.PageCount & scan_key) == 0:
+                num_pages = 0
+                print(f"dj key provided, calculating num_pages for {len(self.tiff_files)} tiffs")
+                for tiff_file in tqdm(self.tiff_files):
+                    tiff_pages = len(tiff_file.pages)
+                    print(f"{tiff_file.filename}: {tiff_pages}")
+                    num_pages += tiff_pages
+                    print(f"Total Pages so far :{num_pages}")
+                        
+                # Count the total number of pages across all tiffs
+                scan_key['npages'] = num_pages
+                lbm.PageCount.insert1(scan_key, ignore_extra_fields=True, skip_duplicates=True)
+                
+            else:
+                return (lbm.PageCount & scan_key).fetch1('npages')
+        else:
+            print('No dj key provided, calculating num_pages')
+            num_pages = sum([len(tiff_file.pages) for tiff_file in self.tiff_files])
         return num_pages
 
     @property
@@ -291,28 +326,30 @@ class BaseScan():
     def field_offsets(self):
         raise NotImplementedError('Subclasses of BaseScan must implement this property')
 
-    def read_data(self, filenames, dtype):
+    def read_data(self, filenames, dtype, scan_key=None):
         """ Set self.header, self.filenames and self.dtype. Data is read lazily when needed.
 
         Args:
             filenames: List of strings. Tiff filenames.
             dtype: Data type of the output array.
         """
+        
         self.filenames = filenames # set filenames
         self.dtype = dtype # set dtype of read data
         self.header = '{}\n{}'.format(self.tiff_files[0].pages[0].description,
                                       self.tiff_files[0].pages[0].software) # set header (ScanImage metadata)
-                    
+        self.header = self.header + f"\nscan_key = {scan_key}"
+        
         # If a scan has > 2 channels (depths), treat as LBM. NOTE: lbm scans may have <30 channels (depths) in the future. 
         if self.num_channels > 2:
             print('Interpreted as LBM Scan!')
             
             self.header = self.header + "\nis_lbm = True"
-            self.header = self.header + f"\nnum_lbm_depths = {self.num_channels}"
+            self.header = self.header + f"\nnum_lbm_beads = {self.num_channels}"
             
             # For LBM scans, depths/channels are not stored sequentially. e.g. Indexing [1] returns the 4th depth from the bottom.
             # NOTE: This conversion array is true for the initial/2023 Rockefellar scans, and may not be true for future scans/rigs/etc. 
-            self.header = self.header + "\nlbm_channel2depth_conversion = [0,4,5,6,7,8,1,9,10,11,12,13,14,15,16,2,17,18,19,20,21,22,3,23,24,25,26,27,28,29]" # deep -> shallow
+            self.header = self.header + "\nlbm_channel2bead_conversion = [0,4,5,6,7,8,1,9,10,11,12,13,14,15,16,2,17,18,19,20,21,22,3,23,24,25,26,27,28,29]" # deep -> shallow
             
             # Update the scan header to reflect how scanreader should interact with an lbm scan.
             # For the initial/2023 set of Rockefellar LBM scans, depths are saved as channels, ScanReader should treat these as fields, so 
@@ -334,21 +371,34 @@ class BaseScan():
             # If there is only 1 roi (a dict), don't loop through
             if isinstance(tiff_file.scanimage_metadata['RoiGroups']['imagingRoiGroup']['rois'], dict):
                 tiff_file.scanimage_metadata['RoiGroups']['imagingRoiGroup']['rois']['pixelsPerLine'] = pixelsPerLine
-                tiff_file.scanimage_metadata['RoiGroups']['imagingRoiGroup']['rois']['is_lbm'] = self.is_lbm()
+                tiff_file.scanimage_metadata['RoiGroups']['imagingRoiGroup']['rois']['is_lbm'] = self.is_lbm
             else:
                 for roi in tiff_file.scanimage_metadata['RoiGroups']['imagingRoiGroup']['rois']:
                     roi['scanfields']['pixelsPerLine'] = pixelsPerLine
-                    roi['scanfields']['is_lbm'] = self.is_lbm()
+                    roi['scanfields']['is_lbm'] = self.is_lbm
         
+    @property
+    def scan_key(self):
+        """ Returns the datajoint scan key associated with this scanreader object, if provided when object was created"""
+        match = re.search(r'scan_key = (?P<scan_key>.*)', self.header)
+        return ast.literal_eval(match.group('scan_key')) if match else None          
+
+    @property
     def is_lbm(self):
         """ Checks if scan is a Light Bean Microscopy Scan, returns True or False """
         match = re.search(r'is_lbm = (?P<is_lbm>.*)', self.header)
         return (match.group('is_lbm') == 'True') if match else False
     
-    def num_lbm_depths(self):
+    @property
+    def num_lbm_beads(self):
         """ Returns the amount of depths within an lbm scan, typically 30"""
-        match = re.search(r'num_lbm_depths = (?P<num_lbm_depths>.*)', self.header)
-        return int(match.group('num_lbm_depths')) if match else None
+        match = re.search(r'num_lbm_beads = (?P<num_lbm_beads>.*)', self.header)
+        return int(match.group('num_lbm_beads')) if match else None
+    
+    @property
+    def bead2chan_conversion(self):
+        match = re.search(r'lbm_channel2bead_conversion = (?P<lbm_channel2bead_conversion>.*)', self.header)
+        return ast.literal_eval(match.group('lbm_channel2bead_conversion')) if match else None
                     
     def __array__(self):
         return self[:]
@@ -425,19 +475,15 @@ class BaseScan():
             want to read (the output array, the read pages and the list-sliced pages).
             Slices limit this to 2x (output array and read pages which are sliced in place).
         """
-        if self.is_lbm():
-            chan_amt = 30
-            field_amt = 5
-            frame_amt = int(self.num_frames / chan_amt)
+        if self.is_lbm:
+            chan_amt = self.num_lbm_beads
         else:
             chan_amt = self.num_channels
-            field_amt = self.num_fields
-            frame_amt = self.num_frames
             
         # Compute pages to load from tiff files
         if self.is_slow_stack:
             frame_step = chan_amt
-            slice_step = chan_amt * frame_amt
+            slice_step = chan_amt * self.num_frames
         else:
             slice_step = chan_amt
             frame_step = chan_amt * self.num_scanning_depths
@@ -813,9 +859,9 @@ class ScanMultiROI(NewerScan, BaseScan):
         microns = (degrees * float(match.group('deg2um_factor'))) if match else None
         return microns
 
-    def read_data(self, filenames, dtype):
+    def read_data(self, filenames, dtype, scan_key=None):
         """ Set the header, create rois and fields (joining them if necessary)."""
-        super().read_data(filenames, dtype)
+        super().read_data(filenames, dtype, scan_key=scan_key)
         self.rois = self._create_rois()
         self.fields = self._create_fields()
         if self.join_contiguous:
@@ -867,17 +913,9 @@ class ScanMultiROI(NewerScan, BaseScan):
 
                     # Compute next starting y
                     next_line_in_page += new_field.height + self._num_fly_to_lines
-                    
-                    # Create duplicates for each field for each pseudo-channel in a LBM scan
-                    if self.is_lbm():
-                        pseudoChannel_amt = 30 # Should be 30 later
-                        for chan_id in np.arange(pseudoChannel_amt):
-                            temp_field = []
-                            temp_field = copy.deepcopy(new_field)
-                            fields.append(temp_field)
-                    else:
-                        fields.append(new_field)
 
+                    fields.append(new_field)
+                    
             # Accumulate overall number of scanned lines
             previous_lines += self._num_lines_between_fields
 
@@ -917,123 +955,92 @@ class ScanMultiROI(NewerScan, BaseScan):
 
     def __getitem__(self, key):
                   
-        if self.is_lbm():
+        if self.is_lbm:
             
-            # From the user's perspective, the scanreader object has 1 channel X depths and Y fields per depth. i.e., X*Y 'true' fields. 
-            # However, when indexing the scanreader object, convert that indexing to match how raw tiff was saved        
             
-            x_indexing = slice(None, None, None)
-            y_indexing = slice(None, None, None)
-            frame_indexing = slice(None, None, None)
-            true_field_list = []
-            field_idx_is_slice = False
-            
-            # Is key an int? This means only indexing for a single field. 
-            if isinstance(key, (int, np.integer)):
-                true_field_list = [key]
-                
-            # Is key a slice? This means only indexing a slice of fields.
-            elif isinstance(key, slice):
-                field_idx_is_slice = True
-                true_field_list = np.arange(key.start or 0, 
-                                            key.stop or self.num_fields, 
-                                            key.step or 1)
-                
-            # A list means indexing for more than just a field
-            elif isinstance(key, (list, np.ndarray, tuple)):
-                if isinstance(key[0], int):
-                    true_field_list = [key[0]]
-                    
-                elif isinstance(key[0], slice):
-                    field_idx_is_slice = True
-                    true_field_list = np.arange(key[0].start or 0, 
-                                                key[0].stop or self.num_fields, 
-                                                key[0].step or 1)
-                
-                # y indexing
-                if len(key) >= 2:
-                    y_indexing = key[1]
-                    
-                # x indexing
-                if len(key) >= 3:
-                    x_indexing = key[2]
-                    
-                # Frame indexing
-                if len(key) == 5:
-                    frame_indexing = key[4]
-                    
-            else:
-                print(f"No fields identified. Possible Error in index type: {type(key[0])}")
-                true_field_list = []
-                
-            # Convert True Fields to raw fields and raw channels
-            match = re.search(r'lbm_channel2depth_conversion = (?P<channel2depth>.*)', self.header)
-            channels = matlabstr2py(match[0])
-            channel2depth = np.array([int(num) for num in channels[2].split(',')])
+            '''
+            Map the 6D user index to the 5D structure
+            User expects scanreader object's dimensions to be:
+                0: Field
+                1: Bead / depth / plane / delay (Stored as and treated as channel in raw data)
+                2: Y
+                3: X
+                4: Channel (as of Feb 2024, there is only 1 'true' channel for all lbm scans)
+                5: Frames
+            However, much of scanreader expects the indexing to be: 
+                0: Field
+                1: Y
+                2: X
+                3: Channel
+                4: Frames
+            This code converts the user's indexing to scanreader's 'expected' indexing
+            ''' 
 
-            raw_chan_amt = len(channel2depth)
-            raw_field_amt = self.num_fields // raw_chan_amt
-            chan_amt = raw_chan_amt
-            field_amt = raw_field_amt
+            intermediate_key = [slice(None)] * 5
 
-            # Create lookup table, then extract raw channel and field information
-            channel2depth_pairs = np.column_stack((np.arange(len(channel2depth)), channel2depth))
-            depth_order = channel2depth_pairs[np.argsort(channel2depth_pairs[:, 1])][::-1, 0]
-            field_lookup_table = depth_order[:, None] + raw_chan_amt * np.arange(raw_field_amt)
-            field_lookup_table = np.flip(field_lookup_table, 0)
-            
-            all_raw_chans = []
-            all_raw_fields = []
-            for true_field in true_field_list:
-                raw_chan, raw_field = np.where(field_lookup_table == true_field)
-                all_raw_chans.append(raw_chan[0])
-                all_raw_fields.append(raw_field[0])
+            if isinstance(key, (slice, int, np.integer)):
+                intermediate_key[0] = key
                 
-            # make sure single number indices are not arrays/lists/etc...
-            def to_single_number(var):
-                # Check if var is a list or numpy array with exactly one element
-                if isinstance(var, (list, np.ndarray)) and len(var) == 1:
-                    # Extract the single element and return it
-                    return var[0]
-                else:
-                    # Return the variable as-is if it's not a list/array with one element
-                    return var
-                
-            variables = [all_raw_fields, y_indexing, x_indexing, all_raw_chans, frame_indexing]
-            intermediate_key = [to_single_number(var) for var in variables]
-
-            # HACK: Used when meso.MotionCorrection() uses a slice to index a single dimension to keep scanreader object 5d. 
-            if field_idx_is_slice:
-                intermediate_key[0] = slice(all_raw_fields[0],all_raw_fields[0]+1,None)
-                intermediate_key[3] = slice(all_raw_chans[0],all_raw_chans[0]+1,None)
-            intermediate_key = tuple(var for var in intermediate_key)
-            
+            elif isinstance(key, (tuple, list, np.array)):
+                for i, k in enumerate(key):
+                    if i > 5:
+                        raise IndexError("Indexing exceeds expected dimensions.")
+                    
+                    if i == 1:  # Map 'bead' to 'channel' dimension. Also correct for proper bead ordering
+                        # Convert 'k' to an iterable form to unify handling of int, slice, and iterables
+                        if isinstance(k, (int, np.integer)):
+                            k_iterable = [k]  # Convert integer to a single-element list
+                        elif isinstance(k, slice):
+                            # If 'k' is a slice, generate a range of values defined by the slice
+                            k_iterable = range(k.start or 0, 
+                                               k.stop or self.num_lbm_beads, 
+                                               k.step or 1)
+                        else:
+                            k_iterable = k
+                            
+                        # converted_k = [np.argwhere(np.asarray(self.bead2chan_conversion) == k_i)[0][0] for k_i in k_iterable]
+                        converted_k = [self.bead2chan_conversion[k_i] for k_i in k_iterable]
+                        
+                        if len(converted_k) == 1:
+                            converted_k = converted_k[0]
+                        intermediate_key[3] = converted_k
+                        
+                    elif i == 4: # No support for 'true' channel indexing until we know how that would be stored. 
+                        continue
+                    
+                    elif i == 5:  # Frame dimension
+                        intermediate_key[4] = k
+                        
+                    elif i < 5:  # Adjust for skipping 'channel' in user index (Field, Y, X)
+                        intermediate_key[i - (i > 0)] = k
+                        
+            raw_num_channels = self.num_lbm_beads
+            intermediate_key = tuple(intermediate_key)
         else:
-            chan_amt = self.num_channels
-            field_amt = self.num_fields
+            raw_num_channels = self.num_channels
             intermediate_key = key
-        
-        # Fill key to size 5 (raises IndexError if more than 5)
+            
+        # a = [print(x) for x in intermediate_key]
+        # Fill key to size 5 (raises IndexError if more than 5)        
         full_key = utils.fill_key(intermediate_key, num_dimensions=5)
 
         # Check index types are valid
         for i, index in enumerate(full_key):
             utils.check_index_type(i, index)
-
         # Check each dimension is in bounds
-        utils.check_index_is_in_bounds(0, full_key[0], field_amt)
-        for field_id in utils.listify_index(full_key[0], field_amt):
+        utils.check_index_is_in_bounds(0, full_key[0], self.num_fields)
+        for field_id in utils.listify_index(full_key[0], self.num_fields):
             utils.check_index_is_in_bounds(1, full_key[1], self.field_heights[field_id])
             utils.check_index_is_in_bounds(2, full_key[2], self.field_widths[field_id])
-        utils.check_index_is_in_bounds(3, full_key[3], chan_amt)
+        utils.check_index_is_in_bounds(3, full_key[3], raw_num_channels)
         utils.check_index_is_in_bounds(4, full_key[4], self.num_frames)
 
-        field_list = utils.listify_index(full_key[0], field_amt)
+        field_list = utils.listify_index(full_key[0], self.num_fields)
         y_lists = [utils.listify_index(full_key[1], self.field_heights[field_id]) for
                    field_id in field_list]
         x_lists = [utils.listify_index(full_key[2], self.field_widths[field_id]) for
                    field_id in field_list]
-        channel_list = utils.listify_index(full_key[3], chan_amt)
+        channel_list = utils.listify_index(full_key[3], raw_num_channels)
         frame_list = utils.listify_index(full_key[4], self.num_frames)
 
         # Edge case when slice index gives 0 elements or index is empty list, e.g., scan[10:0], scan[[]]
@@ -1050,7 +1057,7 @@ class ScanMultiROI(NewerScan, BaseScan):
         item = np.empty([len(field_list), len(y_lists[0]), len(x_lists[0]),
                         len(channel_list), len(frame_list)], dtype=self.dtype)
         for i, (field_id, y_list, x_list) in enumerate(zip(field_list, y_lists, x_lists)):
-            field = self.fields[field_id+(field_id*30)]
+            field = self.fields[field_id]
 
             # Over each subfield in field (only one for non-contiguous fields)
             slices = zip(field.yslices, field.xslices, field.output_yslices, field.output_xslices)
@@ -1072,9 +1079,13 @@ class ScanMultiROI(NewerScan, BaseScan):
                 # Index pages in y, x
                 item[i, output_ys, output_xs] = pages[0, ys, xs]
 
+        # Switch indices back to include bead dimension (field, bead, Y, X, frames). 'channel' is ignored
+        if self.is_lbm:
+            item = np.transpose(item, (0, 3, 1, 2, 4))
+            full_key = tuple(full_key[i] for i in (0, 3, 1, 2, 4))
+        
         # If original index was an integer, delete that axis (as in numpy indexing)
         squeeze_dims = [i for i, index in enumerate(full_key) if np.issubdtype(type(index),
                                                                                np.signedinteger)]
         item = np.squeeze(item, axis=tuple(squeeze_dims))
-
         return item

@@ -24,7 +24,7 @@ _scans = {'5.1': scans.Scan5Point1, '5.2': scans.Scan5Point2, '5.3': scans.Scan5
           '2019a': scans.Scan2019a, '2019b': scans.Scan2019b,
           '2020': scans.Scan2020, '2021': scans.Scan2021}
 
-def read_scan(pathnames, dtype=np.int16, join_contiguous=False):
+def read_scan(pathnames, dtype=np.int16, join_contiguous=False, scan_key=None):
     """ Reads a ScanImage scan.
 
     Args:
@@ -60,7 +60,7 @@ def read_scan(pathnames, dtype=np.int16, join_contiguous=False):
         raise ScanImageVersionError(error_msg)
 
     # Read metadata and data (lazy operation)
-    scan.read_data(filenames, dtype=dtype)
+    scan.read_data(filenames, dtype=dtype, scan_key=scan_key)
 
     return scan
 
