@@ -31,18 +31,10 @@ lbm-unique formatting/differences are handled under the hood.
 '''
 
 
-def none_crosstalk(scan, correction_matrix, pre_images, post_images, user_params=None, mean_imgs=None):
+def none_crosstalk(scan, correction_matrix, pre_images, post_images, mean_imgs, user_params=None):
 
-    if mean_imgs is None:
-        for field_idx, bead_idx in tqdm(itertools.product(np.arange(scan.num_fields), np.arange(scan.num_lbm_beads))):
-            bead_fields = np.mean(scan[field_idx,bead_idx,:,:,:,:],axis=(-1))
-            pre_images[field_idx][bead_idx]  = bead_fields
-        post_images = pre_images.copy()
-    else:
-        pre_images = mean_imgs.copy()
-        post_images = mean_imgs.copy()
-        
-    # Correction Matrix is just Idendity Matrix. All fields remain unchanged
+    pre_images = mean_imgs.copy()
+    post_images = mean_imgs.copy()
     correction_matrix = np.eye(scan.num_lbm_beads * scan.num_fields)
 
     return correction_matrix, pre_images, post_images
