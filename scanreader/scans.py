@@ -36,6 +36,9 @@ import copy
 import sys
 from tqdm import tqdm
 import time
+# temp
+import pandas as pd
+# temp
 
 class BaseScan():
     """ Properties and methods shared among all scan versions.
@@ -194,31 +197,39 @@ class BaseScan():
         if self.is_lbm and self.scan_key is not None:
             scan_key = self.scan_key
             
+            # Check if you already know how many pages there are
+            if 'npages' in scan_key:
+                return scan_key['npages']
+            else:
+                print('dj key provided, calculating npages')
+                num_pages = sum([len(tiff_file.pages) for tiff_file in self.tiff_files])
+            
             # lbm_path = '/mnt/lab/users/maxgagnon/src/schoolwork/Light Bead/meso_lbm/'
             # if lbm_path not in sys.path:
             #     sys.path.insert(0, lbm_path)
             # import LBM as lbm
-            import datajoint as dj
-            lbm = dj.create_virtual_module('lbm', 'mgagnon_meso_lbm_dev')
-            
-            # Check if you already know how many pages there are
-            if len(lbm.PageCount & scan_key) == 0:
-                num_pages = 0
-                print(f"dj key provided, calculating num_pages for {len(self.tiff_files)} tiffs")
-                for tiff_file in tqdm(self.tiff_files):
-                    tiff_pages = len(tiff_file.pages)
-                    print(f"{tiff_file.filename}: {tiff_pages}")
-                    num_pages += tiff_pages
-                    print(f"Total Pages so far :{num_pages}")
-                        
-                # Count the total number of pages across all tiffs
-                scan_key['npages'] = num_pages
-                lbm.PageCount.insert1(scan_key, ignore_extra_fields=True, skip_duplicates=True)
+            # import datajoint as dj
+            # lbm = dj.create_virtual_module('lbm', 'mgagnon_meso_lbm_dev')
+
                 
-            else:
-                return (lbm.PageCount & scan_key).fetch1('npages')
+            # if len(lbm.PageCount & scan_key) == 0:
+            #     num_pages = 0
+            #     print(f"dj key provided, calculating num_pages for {len(self.tiff_files)} tiffs")
+            #     for tiff_file in tqdm(self.tiff_files):
+            #         tiff_pages = len(tiff_file.pages)
+            #         print(f"{tiff_file.filename}: {tiff_pages}")
+            #         num_pages += tiff_pages
+            #         print(f"Total Pages so far :{num_pages}")
+                        
+            #     # Count the total number of pages across all tiffs
+            #     scan_key['npages'] = num_pages
+            #     lbm.PageCount.insert1(scan_key, ignore_extra_fields=True, skip_duplicates=True)
+                
+            # else:
+            #     return (lbm.PageCount & scan_key).fetch1('npages')
+            
         else:
-            print('No dj key provided, calculating num_pages')
+            print('No dj key provided, calculating npages')
             num_pages = sum([len(tiff_file.pages) for tiff_file in self.tiff_files])
         return num_pages
 
@@ -499,22 +510,40 @@ class BaseScan():
         out_width = len(utils.listify_index(xslice, self._page_width))
 
         # Read pages
+        lbm_PageCountTiffs = pd.read_csv("/home/maxwellg/labwork/data/tables_as_dataframes/lbm_PageCountTiffs.csv")
         pages = np.empty([len(pages_to_read), out_height, out_width], dtype=self.dtype)
         start_page = 0
-        for tiff_file in self.tiff_files:
+        scan_key = self.scan_key
 
+        for tiff_file in self.tiff_files:
+            
+            ### Workaround for actually counting (it takes forever)
+            
+            # REALLY BAD HACK. I'M SO SORRY. 
+            if scan_key['animal_id'] == 0:
+                final_page_in_file = start_page + len(tiff_file.pages)
+                tiff_file_pages = len(tiff_file.pages)
+            else:
+                tiff_name = tiff_file.filename
+                tiff_name = tiff_name.replace('-', '_')
+                tiff_name = tiff_name.replace(f"_{scan_key['scan_idx']}_", f"_{str(scan_key['scan_idx']).zfill(5)}_")
+                lbm_PageCountTiffs_filt = lbm_PageCountTiffs[(lbm_PageCountTiffs['file_name'] == tiff_name)]
+                tiff_file_pages = lbm_PageCountTiffs_filt['npages'].values[0]
+                final_page_in_file = start_page + tiff_file_pages
+            
             # Get indices in this tiff file and in output array
-            final_page_in_file = start_page + len(tiff_file.pages)
+            # final_page_in_file = start_page + len(tiff_file.pages)
             is_page_in_file = lambda page: page in range(start_page, final_page_in_file)
             pages_in_file = filter(is_page_in_file, pages_to_read)
             file_indices = [page - start_page for page in pages_in_file]
             global_indices = [is_page_in_file(page) for page in pages_to_read]
-
+            
             # Read from this tiff file (if needed)
             if len(file_indices) > 0:
                 # this line looks a bit ugly but is memory efficient. Do not separate
                 pages[global_indices] = tiff_file.asarray(key=file_indices)[..., yslice, xslice]
-            start_page += len(tiff_file.pages)
+            # start_page += len(tiff_file.pages)
+            start_page += tiff_file_pages
 
         # Reshape the pages into (slices, y, x, channels, frames)
         new_shape = [len(frame_list), len(slice_list), len(channel_list), out_height, out_width]

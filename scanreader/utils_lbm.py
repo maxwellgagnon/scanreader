@@ -7,7 +7,7 @@ from . import core
 import itertools
 import sys
 import copy
-sys.path.append('/mnt/lab/users/maxgagnon/src/mosaic-picasso')
+sys.path.append('/mnt/src/mosaic-picasso')
 import mosaic_picasso.mosaic as mp
 import mosaic_picasso.utils as utils
 
