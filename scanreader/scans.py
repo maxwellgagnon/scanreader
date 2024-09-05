@@ -501,10 +501,33 @@ class BaseScan():
         # Read pages
         pages = np.empty([len(pages_to_read), out_height, out_width], dtype=self.dtype)
         start_page = 0
+
+        ##########
+        if self.is_lbm and self.scan_key is not None:
+            import datajoint as dj
+            lbm = dj.create_virtual_module('lbm', 'mgagnon_meso_lbm_dev')
+        ##########
+
         for tiff_file in self.tiff_files:
+            
+            ##########
+            # Cache the tiff_file's page count
+            if self.is_lbm and self.scan_key is not None:
+                scan_key_ = self.scan_key.copy()
+                scan_key_['file_name'] = tiff_file.filename
+                if len(lbm.PageCountTiffs & scan_key_) == 0:
+                    print(f"Counting Tiff Pages, caching for {tiff_file.filename}")
+                    scan_key_['npages'] = len(tiff_file.pages)
+                    lbm.PageCountTiffs.insert1(scan_key_, ignore_extra_fields=True,)
+
+                final_page_in_file = start_page + (lbm.PageCountTiffs & scan_key_).fetch1('npages')
+            else:
+                print(f"Counting Tiff Pages, not caching")
+                final_page_in_file = start_page + len(tiff_file.pages)
+            ##########
 
             # Get indices in this tiff file and in output array
-            final_page_in_file = start_page + len(tiff_file.pages)
+            # final_page_in_file = start_page + len(tiff_file.pages)
             is_page_in_file = lambda page: page in range(start_page, final_page_in_file)
             pages_in_file = filter(is_page_in_file, pages_to_read)
             file_indices = [page - start_page for page in pages_in_file]
@@ -514,7 +537,10 @@ class BaseScan():
             if len(file_indices) > 0:
                 # this line looks a bit ugly but is memory efficient. Do not separate
                 pages[global_indices] = tiff_file.asarray(key=file_indices)[..., yslice, xslice]
-            start_page += len(tiff_file.pages)
+            if self.is_lbm and self.scan_key is not None:
+                start_page += (lbm.PageCountTiffs & scan_key_).fetch1('npages')
+            else:
+                start_page += len(tiff_file.pages)
 
         # Reshape the pages into (slices, y, x, channels, frames)
         new_shape = [len(frame_list), len(slice_list), len(channel_list), out_height, out_width]
